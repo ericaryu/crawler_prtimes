@@ -7,6 +7,7 @@ PR TIMES Beauty 섹션 오늘자 뉴스 크롤러
 """
 
 import asyncio
+import datetime
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -15,8 +16,10 @@ import pandas as pd
 from playwright.async_api import async_playwright
 
 # --- 설정 ---
+# 오늘 날짜를 가져와서 파일명에 넣습니다 (예: prtimes_beauty_2024-05-22.csv)
+today_str = datetime.datetime.now().strftime("%Y-%m-%d")
 TARGET_URL = "https://prtimes.jp/beauty/"
-OUTPUT_FILE = "prtimes_beauty_today.csv"
+OUTPUT_FILE = f"prtimes_beauty_{today_str}.csv"
 SAVE_INTERVAL = 5
 
 # 한국어 번역: googletrans 사용 (동기 라이브러리 → 스레드 풀에서 실행)
