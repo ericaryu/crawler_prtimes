@@ -33,8 +33,13 @@ GEMINI_RATE_LIMIT_WINDOW_SEC = 60
 _gemini_call_times = deque(maxlen=GEMINI_RATE_LIMIT_CALLS)
 _gemini_lock = asyncio.Lock()
 
-# 로컬 키워드 필터 (비용/할당량 0원, LLM 호출 전 1차 제거)
-NEGATIVE_KEYWORDS = ["리콜", "회수", "정정", "사과", "부적합", "중단", "오기", "결산", "인사", "주가"]
+# 로컬 키워드 필터: 일본어 원문 제목(title_jp) 기준, LLM/번역 호출 전 1차 제거
+# [부정적 이슈] [영업 부적합 기업 동향] [단순 정보성/노이즈]
+NEGATIVE_KEYWORDS_JA = [
+    "回収", "お詫び", "訂正", "不適合", "中止", "誤記",  # 부정적 이슈 (회수/리콜, 사과, 정정 등)
+    "決算", "人事", "株価", "訃報", "事件", "事故",     # 영업 부적합 기업 동향 (결산, 인사, 주가, 부고, 사건, 사고)
+    "アンケート", "調査", "実施", "共同",               # 단순 정보성/노이즈 (설문, 조사, 실시, 공동)
+]
 
 # 한국어 번역: googletrans 사용 (동기 라이브러리 → 스레드 풀에서 실행)
 # 대안: Ollama 로컬 번역 시 아래 ask_ollama 사용으로 교체 가능
@@ -84,13 +89,13 @@ async def translate_company_async(ja_company: str) -> str:
     return await loop.run_in_executor(_executor, _company_name_ko_phonetic, ja_company)
 
 
-def local_first_filter(title_ko: str) -> tuple:
-    """LLM 호출 전, 부적합 키워드로 1차 필터. (통과 여부, 실패 시 사유)."""
-    if not title_ko or title_ko == "NULL":
+def local_first_filter(title_jp: str) -> tuple:
+    """일본어 원문 제목 기준 1차 필터. 부적합 키워드 포함 시 (False, 사유), 통과 시 (True, None)."""
+    if not title_jp or not title_jp.strip():
         return True, None
-    for word in NEGATIVE_KEYWORDS:
-        if word in title_ko:
-            return False, f"부정 키워드 포함 ({word})"
+    for word in NEGATIVE_KEYWORDS_JA:
+        if word in title_jp:
+            return False, f"부적합 키워드 포함 ({word})"
     return True, None
 
 
@@ -113,8 +118,8 @@ async def _record_gemini_call():
 
 
 async def judge_news_suitability(title_jp: str, title_ko: str) -> tuple:
-    """영업 적합성 판단: 1차 로컬 키워드 필터 → 2차 Gemini LLM (쓰로틀링 적용)."""
-    is_passed, local_reason = local_first_filter(title_ko)
+    """영업 적합성 판단: 1차 로컬 키워드 필터(title_jp) → 2차 Gemini LLM (쓰로틀링 적용)."""
+    is_passed, local_reason = local_first_filter(title_jp)
     if not is_passed:
         return False, local_reason
 
@@ -388,11 +393,15 @@ async def main():
             remaining = total - i
             print(f"[{i}/{total}] 처리 중... (남은 기사 {remaining}건)")
 
-            # 한국어 번역 (제목 번역, 회사명 발음)
-            title_ko = await translate_title_async(art["title_jp"])
-            comp_ko = await translate_company_async(art["comp_jp"])
-            # 영업 적합성 판단 (1차 로컬 키워드 → 2차 Gemini, 1분 15회 쓰로틀링)
-            suitability, reason = await judge_news_suitability(art["title_jp"], title_ko)
+            # 1차: 일본어 원문 기준 로컬 필터 (통과 시에만 번역·Gemini 호출)
+            passed_local, local_reason = local_first_filter(art["title_jp"])
+            if not passed_local:
+                suitability, reason = False, local_reason
+                title_ko, comp_ko = "", ""
+            else:
+                title_ko = await translate_title_async(art["title_jp"])
+                comp_ko = await translate_company_async(art["comp_jp"])
+                suitability, reason = await judge_news_suitability(art["title_jp"], title_ko)
 
             detail_page = await context.new_page()
             try:

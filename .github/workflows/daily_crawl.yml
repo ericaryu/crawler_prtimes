@@ -33,7 +33,10 @@ jobs:
       env:
         Gemini_Git_API_Key: ${{ secrets.Gemini_Git_API_Key }}
       run: |
+<<<<<<< HEAD
         # 실제 파일명(예: prtimes_beauty_today.py)으로 반드시 수정하세요!
+=======
+>>>>>>> 4d71a3e (refactor: 크롤러 스크립트 파일명 변경 (prtimes_beauty_crawler.py → prtimes_beauty_today.py))
         python prtimes_beauty_today.py 
 
     - name: Send Email with Date CSV 🌸

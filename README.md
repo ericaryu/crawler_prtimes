@@ -15,7 +15,7 @@ playwright install chromium
 ```bash
 # 영업 적합성 판단 사용 시 환경변수 설정 (선택)
 export Gemini_Git_API_Key="your-gemini-api-key"
-python prtimes_beauty_crawler.py
+python prtimes_beauty_today.py
 ```
 
 결과는 실행한 날짜 기준 `prtimes_beauty_YYYY-MM-DD.csv` (예: `prtimes_beauty_2026-02-09.csv`)에 UTF-8 BOM으로 저장됩니다.
