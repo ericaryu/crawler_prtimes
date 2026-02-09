@@ -22,8 +22,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # google-generativeai 라이브러리를 추가했습니다.
-        pip install pandas playwright googletrans==4.0.0-rc1 google-generativeai
+        pip install -r requirements.txt
 
     - name: Install Playwright Browsers
       run: |
@@ -32,12 +31,7 @@ jobs:
     - name: Run Crawler with Gemini
       env:
         Gemini_Git_API_Key: ${{ secrets.Gemini_Git_API_Key }}
-      run: |
-<<<<<<< HEAD
-        # 실제 파일명(예: prtimes_beauty_today.py)으로 반드시 수정하세요!
-=======
->>>>>>> 4d71a3e (refactor: 크롤러 스크립트 파일명 변경 (prtimes_beauty_crawler.py → prtimes_beauty_today.py))
-        python prtimes_beauty_today.py 
+      run: python prtimes_beauty_today.py
 
     - name: Send Email with Date CSV 🌸
       uses: dawidd6/action-send-mail@v3
