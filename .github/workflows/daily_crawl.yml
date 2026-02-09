@@ -36,6 +36,7 @@ jobs:
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add prtimes_beauty_today.csv
+        # 파일명이 매일 달라지므로 모든 CSV를 추가하도록 수정!
+        git add *.csv 
         git commit -m "Auto-update: $(date +'%Y-%m-%d')" || echo "No changes to commit"
         git push
