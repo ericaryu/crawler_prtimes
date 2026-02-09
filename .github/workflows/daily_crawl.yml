@@ -32,6 +32,22 @@ jobs:
       run: |
         python prtimes_beauty_crawler.py 
 
+    - name: Send Email with Date CSV 🌸
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_PASSWORD }}
+        subject: "🌸 주인님! 오늘자 뷰티 뉴스 배달왔어요! 🌸"
+        body: |
+          안녕하세요, 주인님! 🤖
+          오늘도 정성껏 수집한 뷰티 뉴스 CSV 파일을 첨부합니다.
+          행복한 하루 되세요! ✨
+        to: ${{ secrets.MAIL_USERNAME }}
+        from: "행복한 크롤러 봇"
+        attachments: "*.csv"    
+
     - name: Commit and Push CSV
       run: |
         git config --global user.name "github-actions[bot]"
