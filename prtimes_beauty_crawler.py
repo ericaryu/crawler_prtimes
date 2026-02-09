@@ -3,13 +3,17 @@
 PR TIMES Beauty 섹션 오늘자 뉴스 크롤러
 - 목록 페이지에서 '오늘' 게재 기사만 필터링 (分前, 時間前)
 - 각 기사 상세 페이지에서 제목/회사/프로필/연락처 추출
+- 로컬 키워드 1차 필터 + Gemini LLM 영업 적합성 판단 (1분 15회 제한 쓰로틀링)
 - 5건마다 CSV에 저장
 """
 
 import asyncio
 import datetime
+import json
 import os
 import re
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
@@ -21,6 +25,16 @@ today_str = datetime.datetime.now().strftime("%Y-%m-%d")
 TARGET_URL = "https://prtimes.jp/beauty/"
 OUTPUT_FILE = f"prtimes_beauty_{today_str}.csv"
 SAVE_INTERVAL = 5
+
+# Gemini API (1분 15회 제한 대응 쓰로틀링)
+GEMINI_API_KEY = os.environ.get("Gemini_Git_API_Key")
+GEMINI_RATE_LIMIT_CALLS = 15
+GEMINI_RATE_LIMIT_WINDOW_SEC = 60
+_gemini_call_times = deque(maxlen=GEMINI_RATE_LIMIT_CALLS)
+_gemini_lock = asyncio.Lock()
+
+# 로컬 키워드 필터 (비용/할당량 0원, LLM 호출 전 1차 제거)
+NEGATIVE_KEYWORDS = ["리콜", "회수", "정정", "사과", "부적합", "중단", "오기", "결산", "인사", "주가"]
 
 # 한국어 번역: googletrans 사용 (동기 라이브러리 → 스레드 풀에서 실행)
 # 대안: Ollama 로컬 번역 시 아래 ask_ollama 사용으로 교체 가능
@@ -68,6 +82,81 @@ async def translate_company_async(ja_company: str) -> str:
     """회사명 한국어 발음 표기 (비동기 래퍼)."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_executor, _company_name_ko_phonetic, ja_company)
+
+
+def local_first_filter(title_ko: str) -> tuple:
+    """LLM 호출 전, 부적합 키워드로 1차 필터. (통과 여부, 실패 시 사유)."""
+    if not title_ko or title_ko == "NULL":
+        return True, None
+    for word in NEGATIVE_KEYWORDS:
+        if word in title_ko:
+            return False, f"부정 키워드 포함 ({word})"
+    return True, None
+
+
+async def _wait_gemini_rate_limit():
+    """1분 15회 제한: 최근 15회 호출이 60초 안에 있으면 자동 대기."""
+    async with _gemini_lock:
+        now = time.monotonic()
+        while len(_gemini_call_times) >= GEMINI_RATE_LIMIT_CALLS:
+            wait_sec = (_gemini_call_times[0] + GEMINI_RATE_LIMIT_WINDOW_SEC) - now
+            if wait_sec > 0:
+                await asyncio.sleep(wait_sec)
+            _gemini_call_times.popleft()
+            now = time.monotonic()
+
+
+async def _record_gemini_call():
+    """호출 시각 기록 (쓰로틀링용, 락으로 보호)."""
+    async with _gemini_lock:
+        _gemini_call_times.append(time.monotonic())
+
+
+async def judge_news_suitability(title_jp: str, title_ko: str) -> tuple:
+    """영업 적합성 판단: 1차 로컬 키워드 필터 → 2차 Gemini LLM (쓰로틀링 적용)."""
+    is_passed, local_reason = local_first_filter(title_ko)
+    if not is_passed:
+        return False, local_reason
+
+    if not GEMINI_API_KEY:
+        return None, "API Key 없음 (Gemini_Git_API_Key 환경변수 설정)"
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+    except Exception as e:
+        return None, f"Gemini 설정 오류: {str(e)}"
+
+    prompt = f"""
+# Role: 일본 뷰티 시장 전문 영업 컨설턴트
+# Task: 뉴스 제목이 '신규 영업 메일의 첫인사'로 적절한지 판단
+
+# 판단 기준:
+1. 화장품/뷰티 산업 관련성: 순수 화장품, 뷰티 디바이스 소식인가? (패션, 식품 제외)
+2. 긍정적 화제성: 신제품 출시, 수상, 팝업 등 '축하'할 일인가? (분쟁, 주가, 결산 제외)
+3. 영업 활용도: 메일 서두에 "축하드립니다"라고 언급 가능한가?
+
+# Constraints: 반드시 JSON으로만 답변할 것.
+# Output Format: {{"is_suitable": boolean, "reason": "string"}}
+
+# Input Data:
+- News Title: {title_jp} ({title_ko})
+"""
+
+    try:
+        await _wait_gemini_rate_limit()
+        if hasattr(model, "generate_content_async"):
+            response = await model.generate_content_async(prompt)
+        else:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+        await _record_gemini_call()
+        result_text = (response.text or "").replace("```json", "").replace("```", "").strip()
+        result_json = json.loads(result_text)
+        return result_json.get("is_suitable", False), result_json.get("reason", "")
+    except Exception as e:
+        return False, f"API 오류: {str(e)}"
 
 
 # og:description에서 게재 일시 추출 (예: （2026年2月9日 11時00分）)
@@ -302,6 +391,8 @@ async def main():
             # 한국어 번역 (제목 번역, 회사명 발음)
             title_ko = await translate_title_async(art["title_jp"])
             comp_ko = await translate_company_async(art["comp_jp"])
+            # 영업 적합성 판단 (1차 로컬 키워드 → 2차 Gemini, 1분 15회 쓰로틀링)
+            suitability, reason = await judge_news_suitability(art["title_jp"], title_ko)
 
             detail_page = await context.new_page()
             try:
@@ -311,6 +402,8 @@ async def main():
                 results.append({
                     "일어 기사 제목": art["title_jp"],
                     "한국어 번역": title_ko,
+                    "영업 적합성": suitability,
+                    "판단 근거": reason or "",
                     "기사 링크": art["link"],
                     "게재 일시": art["time"],  # 상세 미진입 시 목록 시간 유지
                     "회사명(원문)": art["comp_jp"],
@@ -333,6 +426,8 @@ async def main():
             record = {
                 "일어 기사 제목": art["title_jp"],
                 "한국어 번역": title_ko,
+                "영업 적합성": suitability,
+                "판단 근거": reason or "",
                 "기사 링크": art["link"],
                 "게재 일시": pub_time if pub_time else art["time"],
                 "회사명(원문)": art["comp_jp"],
