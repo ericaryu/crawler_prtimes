@@ -129,9 +129,13 @@ async def judge_news_suitability(title_jp: str, title_ko: str) -> tuple:
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel(model_name="models/gemini-1.5-flash")
     except Exception as e:
-        return None, f"Gemini 설정 오류: {str(e)}"
+    # 에러 시 어떤 모델이 가능한지 로그에 찍어서 '정확한 이름'을 확인합니다.
+    print(f"--- Available Models List ---")
+    for m in genai.list_models():
+        print(m.name)
+    raise e
 
     prompt = f"""
 # Role: 일본 뷰티 시장 전문 영업 컨설턴트
