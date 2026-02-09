@@ -44,8 +44,8 @@ jobs:
           안녕하세요, 주인님! 🤖
           오늘도 정성껏 수집한 뷰티 뉴스 CSV 파일을 첨부합니다.
           행복한 하루 되세요! ✨
-        to: ${{ secrets.MAIL_USERNAME }}
-        from: "행복한 크롤러 봇"
+        to: ${{ secrets.MAIL_USERNAME }}  # <--- 한 줄 내리고 앞칸을 맞춰주세요!
+        from: "돌아라 일본 PR 크롤러 봇"
         attachments: "*.csv"    
 
     - name: Commit and Push CSV
