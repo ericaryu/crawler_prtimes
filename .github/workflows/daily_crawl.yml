@@ -22,16 +22,13 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # --upgrade를 통해 최신 버전의 Gemini SDK를 강제로 설치합니다.
-        pip install --upgrade pandas playwright googletrans==4.0.0-rc1 google-generativeai
+        pip install -r requirements.txt
 
     - name: Install Playwright Browsers
       run: |
         playwright install chromium --with-deps
 
-    - name: Run Crawler with Gemini
-      env:
-        Gemini_Git_API_Key: ${{ secrets.Gemini_Git_API_Key }}
+    - name: Run Crawler
       run: python prtimes_beauty_today.py
 
     - name: Send Email with Date CSV 🌸
@@ -48,4 +45,5 @@ jobs:
           행복한 하루 되세요! ✨
         to: ${{ secrets.MAIL_USERNAME }}
         from: "돌아라 일본 PR 크롤러 봇"
-        attachments: "*.csv"
+        # 원본 데이터 파일만 첨부 (raw_YYYY-MM-DD.csv)
+        attachments: "raw_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].csv"
