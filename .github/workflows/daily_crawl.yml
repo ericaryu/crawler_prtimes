@@ -1,15 +1,12 @@
 name: Daily PR TIMES Crawling
-
 on:
   schedule:
-    # 한국 시간(KST) 오전 9시 (UTC 00:00)
     - cron: '0 0 * * *'
-  workflow_dispatch: # 직접 'Run' 버튼을 눌러 테스트해볼 수 있게 합니다.
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -31,19 +28,25 @@ jobs:
     - name: Run Crawler
       run: python prtimes_beauty_today.py
 
-    - name: Send Email with Date CSV 🌸
+    - name: Run Analyzer       # ← 추가
+      env:
+        Gemini_Git_API_Key: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        RAW_FILE=$(ls raw_*.csv | head -1)
+        python 02_analyzer.py "$RAW_FILE"
+
+    - name: Send Email with Date CSV 🌸    # ← analyzer 완료 후 실행
       uses: dawidd6/action-send-mail@v3
       with:
         server_address: smtp.gmail.com
         server_port: 465
         username: ${{ secrets.MAIL_USERNAME }}
         password: ${{ secrets.MAIL_PASSWORD }}
-        subject: "🌸 주인님! 오늘자 뷰티 뉴스 배달왔어요! 🌸"
+        subject: "🌸 주인님! 오늘자 뷰티 뉴스 분석 완료됐어요! 🌸"
         body: |
           안녕하세요, 주인님! 🤖
-          오늘도 정성껏 수집한 뷰티 뉴스 CSV 파일을 첨부합니다.
+          오늘도 정성껏 수집·분석한 뷰티 뉴스 CSV 파일을 첨부합니다.
           행복한 하루 되세요! ✨
         to: ${{ secrets.MAIL_USERNAME }}
         from: "돌아라 일본 PR 크롤러 봇"
-        # 원본 데이터 파일만 첨부 (raw_YYYY-MM-DD.csv)
-        attachments: "raw_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].csv"
+        attachments: "final_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].csv"  # ← raw → final
