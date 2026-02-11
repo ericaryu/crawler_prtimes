@@ -13,8 +13,6 @@ import os
 import re
 import smtplib
 import sys
-import time
-from collections import deque
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -22,12 +20,8 @@ from email.mime.text import MIMEText
 import pandas as pd
 
 # --- 설정 ---
-# 번역 없이 일본어 원문만 LLM에 넘김 (Python 3.13 호환, googletrans 미사용)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-LLM_RATE_LIMIT_CALLS = 15
-LLM_RATE_LIMIT_WINDOW_SEC = 60
-_llm_call_times = deque(maxlen=LLM_RATE_LIMIT_CALLS)
-_llm_lock = asyncio.Lock()
+# 유료 OpenAI API 사용으로 1분 15회 제한 미적용
 
 SAVE_INTERVAL = 5  # N건마다 중간 저장
 EARLY_STOP_N = 10  # 초기 N건 모두 영업 부적합이면 처리 중단
@@ -52,6 +46,15 @@ FINAL_COLUMNS = [
 ]
 
 
+def _is_suitable_value(val) -> bool:
+    """영업 적합성 값이 적합(True)인지. bool True 또는 문자열 'True' 모두 처리."""
+    if val is True:
+        return True
+    if isinstance(val, str) and val.strip().lower() == "true":
+        return True
+    return False
+
+
 def local_suitability_filter(title_jp: str) -> bool:
     """로컬 1차 필터. 부적합 키워드 포함 시 False."""
     if not title_jp or not str(title_jp).strip():
@@ -60,22 +63,6 @@ def local_suitability_filter(title_jp: str) -> bool:
         if word in str(title_jp):
             return False
     return True
-
-
-async def _wait_llm_rate_limit():
-    """1분 15회 제한: 최근 15회가 60초 안에 있으면 대기."""
-    async with _llm_lock:
-        now = time.monotonic()
-        while len(_llm_call_times) >= LLM_RATE_LIMIT_CALLS:
-            wait_sec = (_llm_call_times[0] + LLM_RATE_LIMIT_WINDOW_SEC) - now
-            if wait_sec > 0:
-                await asyncio.sleep(wait_sec)
-            _llm_call_times.popleft()
-            now = time.monotonic()
-
-
-def _record_llm_call():
-    _llm_call_times.append(time.monotonic())
 
 
 def _call_openai_sync(prompt: str) -> str:
@@ -88,6 +75,23 @@ def _call_openai_sync(prompt: str) -> str:
     )
     content = response.choices[0].message.content if response.choices else ""
     return (content or "").strip()
+
+
+async def _translate_ja_to_ko_openai(text: str) -> str:
+    """OpenAI로 일본어 → 한국어 번역. 빈 문자열이면 그대로 반환."""
+    if not text or not str(text).strip():
+        return ""
+    if not OPENAI_API_KEY:
+        return ""
+    prompt = f"""다음 일본어 문장을 한국어로 번역하세요. 번역 결과만 출력하고 설명은 하지 마세요.
+
+{text.strip()}"""
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(None, _call_openai_sync, prompt)
+        return (raw or "").strip()
+    except Exception:
+        return ""
 
 
 async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
@@ -106,13 +110,11 @@ async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
 3. 메일 서두에 "축하드립니다" 언급 가능 여부
 # Output (JSON만): {{"is_suitable": boolean, "reason": "string"}}
 # Input (일본어 제목): {title_jp}
+# 한국어 번역: {title_ko or "(없음)"}
 '''
     try:
-        await _wait_llm_rate_limit()
         loop = asyncio.get_event_loop()
         raw = await loop.run_in_executor(None, _call_openai_sync, prompt)
-        async with _llm_lock:
-            _record_llm_call()
         text = re.sub(r"```json\s*|\s*```", "", raw).strip()
         data = json.loads(text)
         return data.get("is_suitable", False), data.get("reason", "")
@@ -140,11 +142,8 @@ async def judge_korean_company(company: str, address: str, url: str, keywords: s
 - 키워드: {keywords or ""}
 '''
     try:
-        await _wait_llm_rate_limit()
         loop = asyncio.get_event_loop()
         raw = await loop.run_in_executor(None, _call_openai_sync, prompt)
-        async with _llm_lock:
-            _record_llm_call()
         text = re.sub(r"```json\s*|\s*```", "", raw).strip()
         data = json.loads(text)
         label = data.get("label", "불명")
@@ -238,9 +237,9 @@ async def run_analysis(input_path: str, today_str: str) -> None:
         title_preview = title_jp[:30] + "..." if len(title_jp) > 30 else title_jp
         print(f"[처리중 {current}/{total}] {title_preview} (남은 기사 {remaining}건)")
 
-        # 번역 스킵: 일본어 원문만 LLM에 넘김 (googletrans 미사용, Python 3.13 호환)
-        title_ko = ""
-        comp_ko = ""
+        # OpenAI로 A열(일어 기사 제목) → B열(한국어 번역), 회사명(원문) → 회사명(한국어)
+        title_ko = await _translate_ja_to_ko_openai(title_jp)
+        comp_ko = await _translate_ja_to_ko_openai(comp_jp)
 
         suitability, reason = await judge_suitability(title_jp, title_ko)
         if suitability is True:
@@ -268,10 +267,10 @@ async def run_analysis(input_path: str, today_str: str) -> None:
         if current % SAVE_INTERVAL == 0 or current == total:
             _save_intermediate(results, final_path, current, total)
 
-        # 초기 EARLY_STOP_N건이 모두 영업 부적합이면 중단
+        # 초기 EARLY_STOP_N건이 모두 영업 부적합이면 중단 (bool/문자열 'True' 모두 고려)
         if current == EARLY_STOP_N:
             first_n = results[-EARLY_STOP_N:]
-            if all(r.get("영업 적합성") is not True for r in first_n):
+            if all(not _is_suitable_value(r.get("영업 적합성")) for r in first_n):
                 print("-" * 50)
                 print(f"초기 {EARLY_STOP_N}건 모두 영업 부적합 → 처리 중단 (총 {current}건 처리)")
                 break
