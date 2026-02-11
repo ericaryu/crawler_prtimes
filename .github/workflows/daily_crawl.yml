@@ -41,7 +41,7 @@ jobs:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         # 초기 10건 모두 영업 부적합이면 조기 중단됨
-        # 種類/키워드/관련링크 등 메타데이터 해석 컬럼도 final에 포함됨
+        # I열 한국 회사 여부 판단 시 N열(키워드) 한국 관련어 포함 시 '한국' 처리
         ls -la "$RAW_FILE"
         python 02_analyzer.py "$RAW_FILE"
 

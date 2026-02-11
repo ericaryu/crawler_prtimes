@@ -33,6 +33,14 @@ NEGATIVE_KEYWORDS = [
     "アンケート", "調査", "実施", "共同",
 ]
 
+# N열(키워드, 일본어)에 포함 시 한국 회사로 판단 (LLM 호출 전 적용)
+KOREA_KEYWORDS_JA = [
+    "韓国", "韓国語", "コリア", "K-POP", "K-ビューティー", "Kビューティー",
+    "ソウル", "アモレ", "アモレパシフィック", "エルジー", "LG生活",
+    "イニスフリー", "コスメ", "サムスン", "ヒュンダイ", "トルリドン",
+    "アヌア", "セウォルス", "コスリックス", "Korea", "Korean", "K-beauty",
+]
+
 # 최종 CSV 열 순서
 FINAL_COLUMNS = [
     "일어 기사 제목", "한국어 번역", "영업 적합성", "판단 근거",
@@ -185,8 +193,23 @@ async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
         return False, f"API 오류: {str(e)}"
 
 
+def _has_korea_keyword_in_keywords(keywords_text: str) -> tuple:
+    """N열(키워드, 일본어)에 한국 관련 키워드가 있으면 (True, 매칭어), 없으면 (False, None)."""
+    if not keywords_text or not str(keywords_text).strip():
+        return False, None
+    t = str(keywords_text).strip()
+    for w in KOREA_KEYWORDS_JA:
+        if w in t:
+            return True, w
+    return False, None
+
+
 async def judge_korean_company(company: str, address: str, url: str, keywords: str) -> tuple:
-    """한국 회사 여부 판단. (label: str, reason: str)"""
+    """한국 회사 여부 판단. (label: str, reason: str). N열(키워드)에 한국 관련어 있으면 '한국'."""
+    found, matched = _has_korea_keyword_in_keywords(keywords)
+    if found:
+        return "한국", f"키워드(N열)에 한국 관련어 포함: {matched}"
+
     if not OPENAI_API_KEY:
         return "불명", "API Key 없음"
 
