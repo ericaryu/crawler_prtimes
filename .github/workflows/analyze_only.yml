@@ -30,7 +30,7 @@ jobs:
 
     - name: Run Analyzer
       env:
-        Gemini_Git_API_Key: ${{ secrets.Gemini_Git_API_Key }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         python 02_analyzer.py "${{ github.event.inputs.raw_filename }}"
 

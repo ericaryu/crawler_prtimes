@@ -24,11 +24,11 @@ import pandas as pd
 
 # --- 설정 ---
 SKIP_TRANSLATION = False  # True면 번역 스킵 (테스트용)
-GEMINI_API_KEY = os.environ.get("Gemini_Git_API_Key")
-GEMINI_RATE_LIMIT_CALLS = 15
-GEMINI_RATE_LIMIT_WINDOW_SEC = 60
-_gemini_call_times = deque(maxlen=GEMINI_RATE_LIMIT_CALLS)
-_gemini_lock = asyncio.Lock()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+LLM_RATE_LIMIT_CALLS = 15
+LLM_RATE_LIMIT_WINDOW_SEC = 60
+_llm_call_times = deque(maxlen=LLM_RATE_LIMIT_CALLS)
+_llm_lock = asyncio.Lock()
 
 SAVE_INTERVAL = 5  # N건마다 중간 저장
 
@@ -90,29 +90,32 @@ def local_suitability_filter(title_jp: str) -> bool:
     return True
 
 
-async def _wait_gemini_rate_limit():
+async def _wait_llm_rate_limit():
     """1분 15회 제한: 최근 15회가 60초 안에 있으면 대기."""
-    async with _gemini_lock:
+    async with _llm_lock:
         now = time.monotonic()
-        while len(_gemini_call_times) >= GEMINI_RATE_LIMIT_CALLS:
-            wait_sec = (_gemini_call_times[0] + GEMINI_RATE_LIMIT_WINDOW_SEC) - now
+        while len(_llm_call_times) >= LLM_RATE_LIMIT_CALLS:
+            wait_sec = (_llm_call_times[0] + LLM_RATE_LIMIT_WINDOW_SEC) - now
             if wait_sec > 0:
                 await asyncio.sleep(wait_sec)
-            _gemini_call_times.popleft()
+            _llm_call_times.popleft()
             now = time.monotonic()
 
 
-def _record_gemini_call():
-    _gemini_call_times.append(time.monotonic())
+def _record_llm_call():
+    _llm_call_times.append(time.monotonic())
 
 
-def _call_gemini_sync(prompt: str) -> str:
-    """동기 Gemini 호출 (스레드에서 실행)."""
-    import google.generativeai as genai
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(model_name="gemini-2.0-flash")
-    response = model.generate_content(prompt)
-    return (response.text or "").strip()
+def _call_openai_sync(prompt: str) -> str:
+    """동기 OpenAI Chat Completion 호출 (스레드에서 실행)."""
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    content = response.choices[0].message.content if response.choices else ""
+    return (content or "").strip()
 
 
 async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
@@ -120,8 +123,8 @@ async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
     if not local_suitability_filter(title_jp):
         return False, "부적합 키워드 포함 (로컬 필터)"
 
-    if not GEMINI_API_KEY:
-        return None, "API Key 없음 (Gemini_Git_API_Key)"
+    if not OPENAI_API_KEY:
+        return None, "API Key 없음 (OPENAI_API_KEY)"
 
     prompt = f'''# Role: 일본 뷰티 시장 전문 영업 컨설턴트
 # Task: 뉴스 제목이 '신규 영업 메일의 첫인사'로 적절한지 판단
@@ -133,11 +136,11 @@ async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
 # Input: {title_jp} ({title_ko})
 '''
     try:
-        await _wait_gemini_rate_limit()
+        await _wait_llm_rate_limit()
         loop = asyncio.get_event_loop()
-        raw = await loop.run_in_executor(None, _call_gemini_sync, prompt)
-        async with _gemini_lock:
-            _record_gemini_call()
+        raw = await loop.run_in_executor(None, _call_openai_sync, prompt)
+        async with _llm_lock:
+            _record_llm_call()
         text = re.sub(r"```json\s*|\s*```", "", raw).strip()
         data = json.loads(text)
         return data.get("is_suitable", False), data.get("reason", "")
@@ -147,7 +150,7 @@ async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
 
 async def judge_korean_company(company: str, address: str, url: str, keywords: str) -> tuple:
     """한국 회사 여부 판단. (label: str, reason: str)"""
-    if not GEMINI_API_KEY:
+    if not OPENAI_API_KEY:
         return "불명", "API Key 없음"
 
     prompt = f'''# Role: 글로벌 뷰티 기업 분석 전문가
@@ -165,11 +168,11 @@ async def judge_korean_company(company: str, address: str, url: str, keywords: s
 - 키워드: {keywords or ""}
 '''
     try:
-        await _wait_gemini_rate_limit()
+        await _wait_llm_rate_limit()
         loop = asyncio.get_event_loop()
-        raw = await loop.run_in_executor(None, _call_gemini_sync, prompt)
-        async with _gemini_lock:
-            _record_gemini_call()
+        raw = await loop.run_in_executor(None, _call_openai_sync, prompt)
+        async with _llm_lock:
+            _record_llm_call()
         text = re.sub(r"```json\s*|\s*```", "", raw).strip()
         data = json.loads(text)
         label = data.get("label", "불명")
