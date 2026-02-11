@@ -1,3 +1,5 @@
 playwright>=1.40.0
 pandas>=2.0.0
 openai>=1.0.0
+# Python 3.13에서 제거된 cgi 모듈 대체 (openai 등 의존성 호환)
+legacy-cgi; python_version >= "3.13"

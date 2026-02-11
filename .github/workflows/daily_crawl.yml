@@ -26,7 +26,7 @@ jobs:
         playwright install chromium --with-deps
 
     - name: Run Crawler
-      run: python prtimes_beauty_today.py
+      run: python prtimes_beauty_today.py  # 상세 페이지 種類(개요·키워드·위치·소재) 수집 포함
 
     - name: Run Analyzer
       env:

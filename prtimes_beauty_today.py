@@ -2,7 +2,7 @@
 """
 PR TIMES Beauty 섹션 오늘자 뉴스 크롤러
 - 목록 페이지에서 '오늘' 게재 기사만 필터링 (分前, 時間前)
-- 각 기사 상세 페이지에서 제목/회사/프로필/연락처 추출
+- 각 기사 상세 페이지에서 제목/회사/種類(개요·키워드·위치정보·소재 다운로드)/프로필/연락처 추출
 - 5건마다 CSV에 저장
 """
 
@@ -123,6 +123,59 @@ async def extract_company_profile(page) -> dict:
                     data["SNS YouTube"] = val
         if any(data.values()):
             break
+    return data
+
+
+async def extract_article_category(page) -> dict:
+    """
+    기사 상단 '種類' 섹션에서
+    商品サービス(개요), ビジネスカテゴリ, キーワード, 位置情報, ダウンロード(소재파일) 추출.
+    dl > dt/dd 또는 div.table_row 내 dt, dd 구조 대응.
+    """
+    data = {
+        "개요": "",
+        "비즈니스카테고리": "",
+        "키워드": "",
+        "위치정보": "",
+        "관련링크": "",
+        "첨부PDF명": "",
+        "첨부PDF링크": "",
+        "소재파일명": "",
+        "소재파일링크": "",
+    }
+    try:
+        # dt/dd 쌍에서 라벨별로 dd 내용 수집 (키워드 등은 복수 항목을 공백/쉼표로 합침)
+        result = await page.evaluate("""
+            () => {
+                const out = { "商品・サービス": "", "ビジネスカテゴリ": "", "キーワード": "", "位置情報": "", "ダウンロード": "", "ダウンロードURL": "" };
+                const dts = document.querySelectorAll("dt");
+                for (const dt of dts) {
+                    const key = (dt.innerText || "").trim();
+                    let dd = dt.nextElementSibling;
+                    if (!dd || dd.tagName !== "DD") dd = dt.parentElement?.querySelector("dd");
+                    if (!dd) continue;
+                    const text = (dd.innerText || "").trim().replace(/\\s+/g, " ");
+                    const firstLink = dd.querySelector("a");
+                    const href = firstLink ? (firstLink.getAttribute("href") || "") : "";
+                    const fullUrl = href && href.startsWith("http") ? href : (href ? "https://prtimes.jp" + href : "");
+                    if (key.indexOf("商品") !== -1 && key.indexOf("サービス") !== -1) out["商品・サービス"] = text;
+                    else if (key.indexOf("ビジネスカテゴリ") !== -1) out["ビジネスカテゴリ"] = text;
+                    else if (key.indexOf("キーワード") !== -1) out["キーワード"] = text;
+                    else if (key.indexOf("位置情報") !== -1) out["位置情報"] = text;
+                    else if (key.indexOf("ダウンロード") !== -1) { out["ダウンロード"] = text; out["ダウンロードURL"] = fullUrl; }
+                }
+                return out;
+            }
+        """)
+        if result:
+            data["개요"] = (result.get("商品・サービス") or "").strip()
+            data["비즈니스카테고리"] = (result.get("ビジネスカテゴリ") or "").strip()
+            data["키워드"] = (result.get("キーワード") or "").strip()
+            data["위치정보"] = (result.get("位置情報") or "").strip()
+            data["소재파일명"] = (result.get("ダウンロード") or "").strip()
+            data["소재파일링크"] = (result.get("ダウンロードURL") or "").strip()
+    except Exception:
+        pass
     return data
 
 
@@ -267,9 +320,11 @@ async def main():
                 results.append({
                     "일어 기사 제목": art["title_jp"],
                     "기사 링크": art["link"],
-                    "게재 일시": art["time"],  # 상세 미진입 시 목록 시간 유지
+                    "게재 일시": art["time"],
                     "회사명(원문)": art["comp_jp"],
                     "회사 프로필 링크": art["comp_link"],
+                    "개요": "", "비즈니스카테고리": "", "키워드": "", "위치정보": "", "관련링크": "",
+                    "첨부PDF명": "", "첨부PDF링크": "", "소재파일명": "", "소재파일링크": "",
                     "업종": "", "본사 주소": "", "전화번호": "", "대표자명": "",
                     "상장 여부": "", "자본금": "", "설립일": "", "공식 URL": "",
                     "SNS X": "", "SNS Facebook": "", "SNS YouTube": "",
@@ -280,7 +335,7 @@ async def main():
             body_text = await detail_page.inner_text("body")
             email, website = _extract_email_and_website(body_text)
             company_profile = await extract_company_profile(detail_page)
-            # D열 게재 일시: 기사 페이지 og:description 내 （2026年2月9日 11時00分） 사용
+            category_section = await extract_article_category(detail_page)
             pub_time = await _extract_publish_time_from_og_description(detail_page)
             await detail_page.close()
 
@@ -290,6 +345,7 @@ async def main():
                 "게재 일시": pub_time if pub_time else art["time"],
                 "회사명(원문)": art["comp_jp"],
                 "회사 프로필 링크": art["comp_link"],
+                **category_section,
                 **company_profile,
                 "이메일": email or "",
                 "문의 웹사이트 URL": website or "",
