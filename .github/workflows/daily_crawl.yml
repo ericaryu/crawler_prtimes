@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -25,6 +27,12 @@ jobs:
       run: |
         playwright install chromium --with-deps
 
+    - name: Set file names
+      run: |
+        echo "TODAY=$(date +%F)" >> $GITHUB_ENV
+        echo "RAW_FILE=raw_$(date +%F).csv" >> $GITHUB_ENV
+        echo "FINAL_FILE=final_$(date +%F).csv" >> $GITHUB_ENV
+
     - name: Run Crawler
       run: python prtimes_beauty_today.py  # 상세 페이지 種類(개요·키워드·위치·소재) 수집 포함
 
@@ -33,7 +41,7 @@ jobs:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         # 초기 10건 모두 영업 부적합이면 조기 중단됨
-        RAW_FILE=$(ls raw_*.csv | head -1)
+        ls -la "$RAW_FILE"
         python 02_analyzer.py "$RAW_FILE"
 
     - name: Send Email with Date CSV 🌸    # ← analyzer 완료 후 실행
@@ -50,4 +58,5 @@ jobs:
           행복한 하루 되세요! ✨
         to: ${{ secrets.MAIL_USERNAME }}
         from: "돌아라 일본 PR 크롤러 봇"
-        attachments: "final_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].csv"  # ← raw → final
+        # analyzer 이후 생성된 해당 날짜 final 파일 1개만 첨부
+        attachments: "${{ env.FINAL_FILE }}"

@@ -10,6 +10,8 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -27,6 +29,13 @@ jobs:
     - name: Upload raw CSV        # ← 로컬에서 raw 파일을 레포에 커밋해둬야 함
       run: |
         ls ${{ github.event.inputs.raw_filename }}
+
+    - name: Set final file name
+      run: |
+        RAW="${{ github.event.inputs.raw_filename }}"
+        DATE="${RAW#raw_}"
+        DATE="${DATE%.csv}"
+        echo "FINAL_FILE=final_${DATE}.csv" >> $GITHUB_ENV
 
     - name: Run Analyzer
       env:
@@ -46,4 +55,4 @@ jobs:
         body: "수동 실행 분석 결과입니다."
         to: ${{ secrets.MAIL_USERNAME }}
         from: "돌아라 일본 PR 크롤러 봇"
-        attachments: "final_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].csv"
+        attachments: "${{ env.FINAL_FILE }}"

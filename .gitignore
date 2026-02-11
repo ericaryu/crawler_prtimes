@@ -1,4 +1,5 @@
 # 크롤링 결과물(산출물)은 커밋/메일 첨부 대상에서 제외
 prtimes_beauty_today.csv
 raw_*.csv
+final_*.csv
 
