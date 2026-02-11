@@ -37,3 +37,11 @@ raw CSV(`raw_YYYY-MM-DD.csv`) 헤더/열 순서는 아래와 같습니다.
 SNS X, SNS Facebook, SNS YouTube,
 이메일, 문의 웹사이트 URL
 ```
+
+## Analyzer 출력 (final_YYYY-MM-DD.csv)
+
+`02_analyzer.py`는 raw CSV를 읽어 아래 해석 컬럼을 추가해 `final_YYYY-MM-DD.csv`를 생성합니다.
+
+- **메타데이터 해석(한국어)**: `개요(해석)`, `비즈니스카테고리(해석)`, `키워드(해석)`, `위치정보(해석)`, `관련링크(해석)`
+
+참고로 raw의 `개요`는 기사 하단 **種類**(예: イベント) 또는 (존재 시) **商品・サービス** 값이 원문으로 들어갑니다.

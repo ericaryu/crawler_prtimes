@@ -42,6 +42,7 @@ jobs:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         # 초기 10건 모두 영업 부적합이면 조기 중단됨
+        # 種類/키워드/관련링크 등 메타데이터 해석 컬럼도 final에 포함됨
         python 02_analyzer.py "${{ github.event.inputs.raw_filename }}"
 
     - name: Send Email

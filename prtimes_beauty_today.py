@@ -129,7 +129,7 @@ async def extract_company_profile(page) -> dict:
 async def extract_article_category(page) -> dict:
     """
     기사 상단 '種類' 섹션에서
-    商品サービス(개요), ビジネスカテゴリ, キーワード, 位置情報, ダウンロード(소재파일) 추출.
+    種類/商品・サービス(개요), ビジネスカテゴリ, キーワード, 位置情報, 関連リンク, ダウンロード(소재파일) 추출.
     dl > dt/dd 또는 div.table_row 내 dt, dd 구조 대응.
     """
     data = {
@@ -147,7 +147,17 @@ async def extract_article_category(page) -> dict:
         # dt/dd 쌍에서 라벨별로 dd 내용 수집 (키워드 등은 복수 항목을 공백/쉼표로 합침)
         result = await page.evaluate("""
             () => {
-                const out = { "商品・サービス": "", "ビジネスカテゴリ": "", "キーワード": "", "位置情報": "", "ダウンロード": "", "ダウンロードURL": "" };
+                const out = {
+                  "種類": "",
+                  "商品・サービス": "",
+                  "ビジネスカテゴリ": "",
+                  "キーワード": "",
+                  "位置情報": "",
+                  "関連リンク": "",
+                  "関連リンクURL": "",
+                  "ダウンロード": "",
+                  "ダウンロードURL": ""
+                };
                 const dts = document.querySelectorAll("dt");
                 for (const dt of dts) {
                     const key = (dt.innerText || "").trim();
@@ -158,20 +168,27 @@ async def extract_article_category(page) -> dict:
                     const firstLink = dd.querySelector("a");
                     const href = firstLink ? (firstLink.getAttribute("href") || "") : "";
                     const fullUrl = href && href.startsWith("http") ? href : (href ? "https://prtimes.jp" + href : "");
-                    if (key.indexOf("商品") !== -1 && key.indexOf("サービス") !== -1) out["商品・サービス"] = text;
+                    if (key === "種類") out["種類"] = text;
+                    else if (key.indexOf("商品") !== -1 && key.indexOf("サービス") !== -1) out["商品・サービス"] = text;
                     else if (key.indexOf("ビジネスカテゴリ") !== -1) out["ビジネスカテゴリ"] = text;
                     else if (key.indexOf("キーワード") !== -1) out["キーワード"] = text;
                     else if (key.indexOf("位置情報") !== -1) out["位置情報"] = text;
+                    else if (key.indexOf("関連リンク") !== -1) { out["関連リンク"] = text; out["関連リンクURL"] = fullUrl; }
                     else if (key.indexOf("ダウンロード") !== -1) { out["ダウンロード"] = text; out["ダウンロードURL"] = fullUrl; }
                 }
                 return out;
             }
         """)
         if result:
-            data["개요"] = (result.get("商品・サービス") or "").strip()
+            # 종류(이벤트 등)가 있으면 우선 사용, 없으면 상품·서비스를 사용
+            kind = (result.get("種類") or "").strip()
+            service = (result.get("商品・サービス") or "").strip()
+            data["개요"] = kind if kind else service
             data["비즈니스카테고리"] = (result.get("ビジネスカテゴリ") or "").strip()
             data["키워드"] = (result.get("キーワード") or "").strip()
             data["위치정보"] = (result.get("位置情報") or "").strip()
+            # 관련링크는 원문(URL 포함) 그대로 저장
+            data["관련링크"] = (result.get("関連リンク") or "").strip()
             data["소재파일명"] = (result.get("ダウンロード") or "").strip()
             data["소재파일링크"] = (result.get("ダウンロードURL") or "").strip()
     except Exception:

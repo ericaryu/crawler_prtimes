@@ -39,6 +39,7 @@ FINAL_COLUMNS = [
     "기사 링크", "게재 일시", "회사명(원문)", "회사명(한국어)",
     "한국 회사 여부", "한국 회사 판단 근거", "회사 프로필 링크",
     "개요", "비즈니스카테고리", "키워드", "위치정보", "관련링크",
+    "개요(해석)", "비즈니스카테고리(해석)", "키워드(해석)", "위치정보(해석)", "관련링크(해석)",
     "첨부PDF명", "첨부PDF링크", "소재파일명", "소재파일링크",
     "업종", "본사 주소", "전화번호", "대표자명", "상장 여부",
     "자본금", "설립일", "공식 URL", "SNS X", "SNS Facebook", "SNS YouTube",
@@ -92,6 +93,68 @@ async def _translate_ja_to_ko_openai(text: str) -> str:
         return (raw or "").strip()
     except Exception:
         return ""
+
+
+async def interpret_metadata_openai(
+    overview: str,
+    biz_category: str,
+    keywords: str,
+    location: str,
+    related_links: str,
+) -> dict:
+    """
+    기사 하단 메타데이터(種類/ビジネスカテゴリ/キーワード/位置情報/関連リンク)를
+    한국어로 이해하기 쉽게 해석/번역.
+    """
+    if not OPENAI_API_KEY:
+        return {
+            "개요(해석)": "",
+            "비즈니스카테고리(해석)": "",
+            "키워드(해석)": "",
+            "위치정보(해석)": "",
+            "관련링크(해석)": "",
+        }
+
+    prompt = f'''# Role: 일본 PR 메타데이터를 한국어로 해석하는 분석가
+# Task: 아래 "원문" 값을 한국 영업 담당자가 이해하기 쉽게 한국어로 해석/번역
+# Rules:
+# - 의미를 유지하되 자연스러운 한국어로 변환
+# - 태그/키워드는 콤마(,)로 구분된 형태로 정리
+# - 값이 비어있으면 빈 문자열로
+# Output (JSON만): {{
+#   "개요_해석": "string",
+#   "비즈니스카테고리_해석": "string",
+#   "키워드_해석": "string",
+#   "위치정보_해석": "string",
+#   "관련링크_해석": "string"
+# }}
+# Input (원문):
+# - 개요: {overview or ""}
+# - 비즈니스카테고리: {biz_category or ""}
+# - 키워드: {keywords or ""}
+# - 위치정보: {location or ""}
+# - 관련링크: {related_links or ""}
+'''
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(None, _call_openai_sync, prompt)
+        text = re.sub(r"```json\\s*|\\s*```", "", raw).strip()
+        data = json.loads(text)
+        return {
+            "개요(해석)": (data.get("개요_해석") or "").strip(),
+            "비즈니스카테고리(해석)": (data.get("비즈니스카테고리_해석") or "").strip(),
+            "키워드(해석)": (data.get("키워드_해석") or "").strip(),
+            "위치정보(해석)": (data.get("위치정보_해석") or "").strip(),
+            "관련링크(해석)": (data.get("관련링크_해석") or "").strip(),
+        }
+    except Exception:
+        return {
+            "개요(해석)": "",
+            "비즈니스카테고리(해석)": "",
+            "키워드(해석)": "",
+            "위치정보(해석)": "",
+            "관련링크(해석)": "",
+        }
 
 
 async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
@@ -241,6 +304,15 @@ async def run_analysis(input_path: str, today_str: str) -> None:
         title_ko = await _translate_ja_to_ko_openai(title_jp)
         comp_ko = await _translate_ja_to_ko_openai(comp_jp)
 
+        # 기사 하단 메타데이터 해석 (원문 → 한국어)
+        meta_interp = await interpret_metadata_openai(
+            overview=row.get("개요", ""),
+            biz_category=row.get("비즈니스카테고리", ""),
+            keywords=row.get("키워드", ""),
+            location=row.get("위치정보", ""),
+            related_links=row.get("관련링크", ""),
+        )
+
         suitability, reason = await judge_suitability(title_jp, title_ko)
         if suitability is True:
             suitable_count += 1
@@ -257,6 +329,7 @@ async def run_analysis(input_path: str, today_str: str) -> None:
         out["판단 근거"] = reason or ""
         out["한국 회사 여부"] = kr_label
         out["한국 회사 판단 근거"] = kr_reason or ""
+        out.update(meta_interp)
 
         for col in FINAL_COLUMNS:
             if col not in out:
