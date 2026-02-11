@@ -15,7 +15,6 @@ import smtplib
 import sys
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -23,7 +22,7 @@ from email.mime.text import MIMEText
 import pandas as pd
 
 # --- 설정 ---
-SKIP_TRANSLATION = False  # True면 번역 스킵 (테스트용)
+# 번역 없이 일본어 원문만 LLM에 넘김 (Python 3.13 호환, googletrans 미사용)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 LLM_RATE_LIMIT_CALLS = 15
 LLM_RATE_LIMIT_WINDOW_SEC = 60
@@ -31,6 +30,7 @@ _llm_call_times = deque(maxlen=LLM_RATE_LIMIT_CALLS)
 _llm_lock = asyncio.Lock()
 
 SAVE_INTERVAL = 5  # N건마다 중간 저장
+EARLY_STOP_N = 10  # 초기 N건 모두 영업 부적합이면 처리 중단
 
 # 1차 로컬 필터: "일어 기사 제목"에 포함 시 즉시 부적합 (LLM 미호출)
 NEGATIVE_KEYWORDS = [
@@ -38,9 +38,6 @@ NEGATIVE_KEYWORDS = [
     "決算", "人事", "株価", "訃報", "事件", "事故",
     "アンケート", "調査", "実施", "共同",
 ]
-
-# 번역용 스레드 풀
-_executor = ThreadPoolExecutor(max_workers=2)
 
 # 최종 CSV 열 순서
 FINAL_COLUMNS = [
@@ -53,31 +50,6 @@ FINAL_COLUMNS = [
     "자본금", "설립일", "공식 URL", "SNS X", "SNS Facebook", "SNS YouTube",
     "이메일", "문의 웹사이트 URL",
 ]
-
-
-def _translate_ja_to_ko(text: str) -> str:
-    """일본어 → 한국어 번역 (동기). 실패 시 빈 문자열."""
-    if SKIP_TRANSLATION or not text or not str(text).strip() or str(text) == "NULL":
-        return ""
-    try:
-        from googletrans import Translator
-        t = Translator()
-        result = t.translate(str(text).strip(), src="ja", dest="ko")
-        return (result.text or "").strip()
-    except Exception:
-        return ""
-
-
-async def translate_title_async(ja_title: str) -> str:
-    """제목 번역 (이벤트 루프 블로킹 방지)."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _translate_ja_to_ko, ja_title or "")
-
-
-async def translate_company_async(ja_company: str) -> str:
-    """회사명 한국어 (비동기 래퍼)."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _translate_ja_to_ko, ja_company or "")
 
 
 def local_suitability_filter(title_jp: str) -> bool:
@@ -133,7 +105,7 @@ async def judge_suitability(title_jp: str, title_ko: str) -> tuple:
 2. 긍정적 화제성: 신제품·수상·팝업 (분쟁·주가·결산 제외)
 3. 메일 서두에 "축하드립니다" 언급 가능 여부
 # Output (JSON만): {{"is_suitable": boolean, "reason": "string"}}
-# Input: {title_jp} ({title_ko})
+# Input (일본어 제목): {title_jp}
 '''
     try:
         await _wait_llm_rate_limit()
@@ -266,8 +238,9 @@ async def run_analysis(input_path: str, today_str: str) -> None:
         title_preview = title_jp[:30] + "..." if len(title_jp) > 30 else title_jp
         print(f"[처리중 {current}/{total}] {title_preview} (남은 기사 {remaining}건)")
 
-        title_ko = await translate_title_async(title_jp)
-        comp_ko = await translate_company_async(comp_jp)
+        # 번역 스킵: 일본어 원문만 LLM에 넘김 (googletrans 미사용, Python 3.13 호환)
+        title_ko = ""
+        comp_ko = ""
 
         suitability, reason = await judge_suitability(title_jp, title_ko)
         if suitability is True:
@@ -295,10 +268,19 @@ async def run_analysis(input_path: str, today_str: str) -> None:
         if current % SAVE_INTERVAL == 0 or current == total:
             _save_intermediate(results, final_path, current, total)
 
-    print("-" * 50)
-    print(f"완료: {final_path} | 총 {total}건, 영업 적합 {suitable_count}건")
+        # 초기 EARLY_STOP_N건이 모두 영업 부적합이면 중단
+        if current == EARLY_STOP_N:
+            first_n = results[-EARLY_STOP_N:]
+            if all(r.get("영업 적합성") is not True for r in first_n):
+                print("-" * 50)
+                print(f"초기 {EARLY_STOP_N}건 모두 영업 부적합 → 처리 중단 (총 {current}건 처리)")
+                break
 
-    send_email(today_str, final_path, total, suitable_count)
+    print("-" * 50)
+    processed = len(results)
+    print(f"완료: {final_path} | 총 {processed}건 처리, 영업 적합 {suitable_count}건")
+
+    send_email(today_str, final_path, processed, suitable_count)
 
 
 def main():

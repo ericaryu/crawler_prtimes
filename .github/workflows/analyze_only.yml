@@ -32,6 +32,7 @@ jobs:
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
+        # 초기 10건 모두 영업 부적합이면 조기 중단됨
         python 02_analyzer.py "${{ github.event.inputs.raw_filename }}"
 
     - name: Send Email
