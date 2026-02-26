@@ -45,18 +45,30 @@ def relate_headers(api_key: str) -> dict:
 
 
 def create_organization(api_key: str, name: str, domain: str | None) -> str:
-    """Organization 생성 후 id 반환."""
+    """Organization 생성 후 id 반환.
+    - 도메인 중복/유효하지 않은 422는 도메인 없이 재시도.
+    - 응답 구조: {"id": "...", "name": "...", ...} (flat)
+    """
+    def _post(payload: dict) -> requests.Response:
+        return requests.post(
+            f"{RELATE_BASE_URL}/organizations",
+            headers=relate_headers(api_key),
+            json=payload,
+            timeout=30,
+        )
+
     payload: dict = {"name": name}
     if domain:
         payload["domains"] = [domain]
-    resp = requests.post(
-        f"{RELATE_BASE_URL}/organizations",
-        headers=relate_headers(api_key),
-        json=payload,
-        timeout=30,
-    )
+
+    resp = _post(payload)
+
+    # 도메인 관련 422이면 도메인 없이 재시도
+    if resp.status_code == 422 and domain:
+        resp = _post({"name": name})
+
     resp.raise_for_status()
-    return resp.json()["organization"]["id"]
+    return resp.json()["id"]
 
 
 def create_list_entry(api_key: str, org_id: str, list_fields: dict) -> None:
@@ -124,22 +136,31 @@ def main() -> None:
     # gspread는 1-based row 인덱스 (1행 = 헤더)
     success_count = 0
     fail_count = 0
+    skip_count = 0
 
+    # 데이터 행 목록 구성
+    data_rows = []
     for sheet_row_idx, raw_row in enumerate(all_values[1:], start=2):
-        # 행을 dict로 변환 (컬럼 수 차이 대비 빈 문자열 패딩)
         padded = raw_row + [""] * (len(headers) - len(raw_row))
-        row = dict(zip(headers, padded))
+        data_rows.append((sheet_row_idx, dict(zip(headers, padded))))
 
-        # --- 필터 조건 ---
-        if col(row, "영업 적합성") != "True":
+    # 필터 적용 후 대상 건수 출력
+    target_rows = []
+    for sheet_row_idx, row in data_rows:
+        if col(row, "영업 적합성").lower() != "true":
             continue
-        if col(row, "한국 회사 여부") == "한국":
+        if col(row, "한국 회사 여부") != "비한국":
             continue
-        if not col(row, "이메일") and not col(row, "문의 웹사이트 URL"):
+        email = col(row, "이메일")
+        if not email or "wordpress" in email.lower():
             continue
         if col(row, "Relate_등록여부") != "":
             continue
+        target_rows.append((sheet_row_idx, row))
 
+    print(f"필터 통과: {len(target_rows)}건 → Relate 등록 시작")
+
+    for sheet_row_idx, row in target_rows:
         # --- 1. Organization 생성 ---
         name = col(row, "회사명(한국어)") or col(row, "회사명(원문)")
         if not name:
