@@ -36,6 +36,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+        pip install gspread google-auth requests
 
     - name: Install Playwright Browsers
       if: steps.check_end.outputs.skip != 'true'
@@ -57,26 +58,20 @@ jobs:
       if: steps.check_end.outputs.skip != 'true'
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        SENDER_EMAIL: ${{ secrets.MAIL_USERNAME }}
+        SENDER_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.MAIL_USERNAME }}
       run: |
         # 초기 10건 모두 영업 부적합이면 조기 중단됨
         # I열 한국 회사 여부 판단 시 N열(키워드) 한국 관련어 포함 시 '한국' 처리
+        # 분석 완료 후 03_to_sheets.py 호출(Sheets 적재) 및 이메일 발송까지 수행
         ls -la "$RAW_FILE"
         python 02_analyzer.py "$RAW_FILE"
 
-    - name: Send Email with Date CSV 🌸
+    - name: Relate 등록
       if: steps.check_end.outputs.skip != 'true'
-      uses: dawidd6/action-send-mail@v3
-      with:
-        server_address: smtp.gmail.com
-        server_port: 465
-        username: ${{ secrets.MAIL_USERNAME }}
-        password: ${{ secrets.MAIL_PASSWORD }}
-        subject: "🌸 주인님! 오늘자 뷰티 뉴스 분석 완료됐어요! 🌸"
-        body: |
-          안녕하세요, 주인님! 🤖
-          오늘도 정성껏 수집·분석한 뷰티 뉴스 CSV 파일을 첨부합니다.
-          행복한 하루 되세요! ✨
-        to: ${{ secrets.MAIL_USERNAME }}
-        from: "돌아라 일본 PR 크롤러 봇"
-        # analyzer 이후 생성된 해당 날짜 final 파일 1개만 첨부
-        attachments: "${{ env.FINAL_FILE }}"
+      env:
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        RELATE_API_KEY: ${{ secrets.RELATE_API_KEY }}
+      run: python 04_to_relate.py

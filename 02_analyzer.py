@@ -12,8 +12,8 @@ import json
 import os
 import re
 import smtplib
+import subprocess
 import sys
-from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -260,28 +260,31 @@ def _save_intermediate(results: list, final_path: str, current: int, total: int)
     print(f"  → 중간 저장 완료 ({current}/{total}건)")
 
 
-def send_email(today_str: str, csv_path: str, total: int, suitable_count: int) -> None:
-    """Gmail SMTP 587로 final CSV 첨부 메일 발송."""
+def send_email(
+    today_str: str,
+    total: int,
+    suitable_count: int,
+    sheet_start_row: int,
+    sheet_end_row: int,
+) -> None:
+    """Gmail SMTP 587로 Sheets 업데이트 결과 메일 발송."""
     sender = os.environ.get("SENDER_EMAIL")
     password = os.environ.get("SENDER_PASSWORD")
     recipient = os.environ.get("RECIPIENT_EMAIL")
     if not sender or not password or not recipient:
         print("메일 발송 스킵: SENDER_EMAIL, SENDER_PASSWORD, RECIPIENT_EMAIL 중 누락")
         return
-    subject = f"[PR TIMES] 뷰티 뉴스 영업 리스트 {today_str}"
-    body = f"총 {total}건 수집, 영업 적합 {suitable_count}건"
+    subject = f"[PR TIMES] 뷰티 뉴스 {today_str} — {sheet_start_row}행~{sheet_end_row}행 업데이트"
+    body = (
+        f"총 {total}건 수집, 영업 적합 {suitable_count}건\n"
+        f"Google Sheets {sheet_start_row}행~{sheet_end_row}행 업데이트 완료"
+    )
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
     msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    if os.path.exists(csv_path):
-        with open(csv_path, "rb") as f:
-            part = MIMEApplication(f.read(), _subtype="csv")
-            part.add_header("Content-Disposition", "attachment", filename=os.path.basename(csv_path))
-            msg.attach(part)
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
@@ -375,7 +378,30 @@ async def run_analysis(input_path: str, today_str: str) -> None:
     processed = len(results)
     print(f"완료: {final_path} | 총 {processed}건 처리, 영업 적합 {suitable_count}건")
 
-    send_email(today_str, final_path, processed, suitable_count)
+    # 03_to_sheets.py 실행 후 결과 파싱
+    sheets_result = subprocess.run(
+        [sys.executable, "03_to_sheets.py", final_path],
+        capture_output=True,
+        text=True,
+    )
+    sheets_stdout = sheets_result.stdout.strip()
+    print(f"[03_to_sheets] {sheets_stdout}")
+    if sheets_result.returncode != 0:
+        print(f"[03_to_sheets] 오류: {sheets_result.stderr.strip()}")
+
+    if sheets_stdout == "신규 데이터 없음":
+        print("Sheets 신규 데이터 없음 → 메일 발송 스킵")
+        return
+
+    # "시작행: N, 종료행: M" 파싱
+    m = re.search(r"시작행:\s*(\d+),\s*종료행:\s*(\d+)", sheets_stdout)
+    if not m:
+        print(f"[03_to_sheets] 출력 파싱 실패 → 메일 발송 스킵 (stdout: {sheets_stdout!r})")
+        return
+
+    sheet_start_row = int(m.group(1))
+    sheet_end_row = int(m.group(2))
+    send_email(today_str, processed, suitable_count, sheet_start_row, sheet_end_row)
 
 
 def main():
