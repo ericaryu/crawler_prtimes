@@ -42,7 +42,10 @@ def main(csv_path: str) -> None:
     ws = sh.worksheet(SHEET_TAB)
 
     existing_values = ws.get_all_values()
-    is_empty = len(existing_values) == 0
+    # 빈 행만 있는 경우(새 탭의 빈 행 등)도 empty로 처리
+    is_empty = len(existing_values) == 0 or all(
+        all(cell == "" for cell in row) for row in existing_values
+    )
 
     # 2. 시트가 비어있으면 헤더 자동 삽입
     if is_empty:
