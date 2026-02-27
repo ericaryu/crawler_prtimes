@@ -71,11 +71,12 @@ def create_organization(api_key: str, name: str, domain: str | None) -> str:
     return resp.json()["id"]
 
 
-def create_contact(api_key: str, org_id: str, email: str) -> None:
-    """Organization에 연결된 Contact(이메일) 생성."""
+def create_contact(api_key: str, org_id: str, email: str, custom_fields: list) -> None:
+    """Organization에 연결된 Contact(이메일 + 커스텀 필드) 생성."""
     payload = {
         "organization_id": org_id,
         "emails": [email],
+        "custom_fields": custom_fields,
     }
     resp = requests.post(
         f"{RELATE_BASE_URL}/contacts",
@@ -203,12 +204,20 @@ def main() -> None:
             fail_count += 1
             continue
 
-        # --- 1-2. Contact(이메일) 생성 — Organization API는 emails 미지원 ---
+        # --- 1-2. Contact(이메일 + 커스텀 필드) 생성 ---
+        contact_custom_fields = [
+            {"name": "기사(원문)",   "value": col(row, "일어 기사 제목")},
+            {"name": "기사(한국어)", "value": col(row, "한국어 번역")},
+            {"name": "기사(링크)",   "value": col(row, "기사 링크")},
+            {"name": "회사명(한국어)", "value": col(row, "회사명(한국어)")},
+        ]
         if email:
             try:
-                create_contact(api_key, org_id, email)
-            except Exception:
-                pass  # Contact 실패는 치명적이지 않으므로 계속 진행
+                create_contact(api_key, org_id, email, contact_custom_fields)
+            except requests.HTTPError as e:
+                print(f"  [경고] Contact 생성 실패 (행 {sheet_row_idx}): {e.response.status_code} {e.response.text[:100]}")
+            except Exception as e:
+                print(f"  [경고] Contact 생성 오류 (행 {sheet_row_idx}): {e}")
 
         # --- 2. List Entry 생성 ---
         list_fields = [
