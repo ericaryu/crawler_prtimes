@@ -74,6 +74,10 @@ jobs:
       env:
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       run: |
+        if [ -z "${GOOGLE_SERVICE_ACCOUNT_JSON}" ]; then
+          echo "GOOGLE_SERVICE_ACCOUNT_JSON 비어 있음 → Sheets 업로드 스킵"
+          exit 0
+        fi
         ls -la "$FINAL_FILE"
         python 03_to_sheets.py "$FINAL_FILE"
 
