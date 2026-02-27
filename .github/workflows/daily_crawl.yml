@@ -69,6 +69,14 @@ jobs:
         ls -la "$RAW_FILE"
         python 02_analyzer.py "$RAW_FILE"
 
+    - name: Upload to Sheets (final → Google Sheets)
+      if: steps.check_end.outputs.skip != 'true'
+      env:
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      run: |
+        ls -la "$FINAL_FILE"
+        python 03_to_sheets.py "$FINAL_FILE"
+
     - name: Relate 등록
       if: steps.check_end.outputs.skip != 'true'
       env:
