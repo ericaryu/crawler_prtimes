@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 04_to_relate.py
-- Google Sheets에서 조건에 맞는 행을 읽어 Relate List에 Organization 등록
+- Google Sheets에서 조건에 맞는 행을 읽어 Relate에 Organization upsert + List entry upsert
 - 실행: python 04_to_relate.py
 """
 
 import json
 import os
-import sys
 from urllib.parse import urlparse
 
 import gspread
@@ -20,149 +19,214 @@ SHEET_TAB = "Relate_PRtimes"
 RELATE_LIST_ID = "ZBUABR"
 RELATE_BASE_URL = "https://api.relate.so/v1"
 
+# Organization에 저장할 커스텀 필드명
+ORG_CUSTOM_FIELD_NAMES = ["이메일", "기사(원문)", "기사(한국어)", "기사(링크)", "회사명(한국어)"]
+# List entry에 저장할 필드명 + data_type
+LIST_FIELD_DEFS = [
+    {"name": "기사(원문)",   "data_type": "text"},
+    {"name": "기사(한국어)", "data_type": "text"},
+    {"name": "기사(링크)",   "data_type": "url"},
+]
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
 
-# --- Google Sheets 클라이언트 ---
+# ── Google Sheets ────────────────────────────────────────────
 def get_gspread_client() -> gspread.Client:
     json_str = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not json_str:
         raise EnvironmentError("환경변수 GOOGLE_SERVICE_ACCOUNT_JSON 이 설정되지 않았습니다.")
-    info = json.loads(json_str)
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    creds = Credentials.from_service_account_info(json.loads(json_str), scopes=SCOPES)
     return gspread.authorize(creds)
 
 
-# --- Relate API 헬퍼 ---
-def relate_headers(api_key: str) -> dict:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+# ── Relate 공통 ───────────────────────────────────────────────
+def rh(api_key: str) -> dict:
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 
-def create_organization(api_key: str, name: str, domain: str | None) -> str:
-    """Organization 생성 후 id 반환.
-    - 도메인 중복/유효하지 않은 422는 도메인 없이 재시도.
-    - 응답 구조: {"id": "...", "name": "...", ...} (flat)
-    """
-    def _post(payload: dict) -> requests.Response:
-        return requests.post(
-            f"{RELATE_BASE_URL}/organizations",
-            headers=relate_headers(api_key),
-            json=payload,
-            timeout=30,
-        )
-
-    payload: dict = {"name": name}
-    if domain:
-        payload["domains"] = [domain]
-
-    resp = _post(payload)
-
-    # 도메인 관련 422이면 도메인 없이 재시도
-    if resp.status_code == 422 and domain:
-        resp = _post({"name": name})
-
-    resp.raise_for_status()
-    return resp.json()["id"]
+def col(row: dict, key: str) -> str:
+    return str(row.get(key, "") or "").strip()
 
 
-def create_contact(api_key: str, org_id: str, email: str, custom_fields: list) -> None:
-    """Organization에 연결된 Contact(이메일 + 커스텀 필드) 생성."""
-    payload = {
-        "organization_id": org_id,
-        "emails": [email],
-        "custom_fields": custom_fields,
-    }
-    resp = requests.post(
-        f"{RELATE_BASE_URL}/contacts",
-        headers=relate_headers(api_key),
-        json=payload,
-        timeout=30,
-    )
-    resp.raise_for_status()
-
-
-def create_list_entry(api_key: str, org_id: str, list_fields: list) -> None:
-    """List Entry 생성. list_fields는 [{"name": "...", "value": "..."}, ...] 형식."""
-    payload = {
-        "entryable_id": org_id,
-        "entryable_type": "Organization",
-        "list_fields": list_fields,
-    }
-    resp = requests.post(
-        f"{RELATE_BASE_URL}/lists/{RELATE_LIST_ID}/entries",
-        headers=relate_headers(api_key),
-        json=payload,
-        timeout=30,
-    )
-    resp.raise_for_status()
-
-
-# --- 유틸 ---
 def parse_domain(url: str) -> str | None:
-    """URL에서 호스트명만 추출 (없으면 None)."""
     url = url.strip()
     if not url:
         return None
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     host = urlparse(url).hostname
-    if not host:
-        return None
-    # www. 제거
-    return host.removeprefix("www.")
+    return host.removeprefix("www.") if host else None
 
 
-def col(row: dict, key: str) -> str:
-    """행에서 값을 꺼내 문자열로 반환 (없거나 None이면 빈 문자열)."""
-    return str(row.get(key, "") or "").strip()
+# ── 초기화: 커스텀 필드 / List 필드 확보 ─────────────────────
+def ensure_org_custom_fields(api_key: str) -> None:
+    """Organization 커스텀 필드 없으면 API로 생성."""
+    r = requests.get(f"{RELATE_BASE_URL}/custom_fields", headers=rh(api_key), timeout=15)
+    r.raise_for_status()
+    existing = {f["name"] for f in r.json()["data"] if f["model"] == "organization"}
+    for name in ORG_CUSTOM_FIELD_NAMES:
+        if name not in existing:
+            r2 = requests.post(f"{RELATE_BASE_URL}/custom_fields", headers=rh(api_key),
+                json={"name": name, "model": "organization", "data_type": "text"}, timeout=15)
+            status = "생성" if r2.ok else f"실패({r2.status_code})"
+            print(f"  [Org 커스텀필드 {status}] {name}")
 
 
-# --- 메인 ---
+def ensure_list_fields(api_key: str) -> None:
+    """List에 필요한 필드 없으면 PATCH로 추가."""
+    r = requests.get(f"{RELATE_BASE_URL}/lists/{RELATE_LIST_ID}", headers=rh(api_key), timeout=15)
+    r.raise_for_status()
+    existing_names = {f["name"] for f in r.json().get("fields", [])}
+    missing = [f for f in LIST_FIELD_DEFS if f["name"] not in existing_names]
+    if missing:
+        r2 = requests.patch(f"{RELATE_BASE_URL}/lists/{RELATE_LIST_ID}", headers=rh(api_key),
+            json={"fields": LIST_FIELD_DEFS}, timeout=15)
+        status = "추가 완료" if r2.ok else f"실패({r2.status_code})"
+        print(f"  [List 필드 {status}] {[f['name'] for f in missing]}")
+
+
+# ── 기존 데이터 로드 ──────────────────────────────────────────
+def build_existing_map(api_key: str) -> dict[str, tuple[str, str]]:
+    """
+    현재 List의 모든 entry를 순회해 {org_name: (org_id, entry_id)} 맵 구성.
+    org_id → org name은 개별 GET으로 조회.
+    """
+    h = rh(api_key)
+    entries: list[dict] = []
+    after = 0
+    while True:
+        r = requests.get(f"{RELATE_BASE_URL}/lists/{RELATE_LIST_ID}/entries",
+            headers=h, params={"first": 100, "after": after}, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        entries.extend(data["data"])
+        if not data["pagination"]["has_next_page"]:
+            break
+        after = data["pagination"]["end_cursor"]
+
+    org_map: dict[str, tuple[str, str]] = {}
+    for e in entries:
+        org_id = e["entryable_id"]
+        entry_id = e["id"]
+        r2 = requests.get(f"{RELATE_BASE_URL}/organizations/{org_id}", headers=h, timeout=10)
+        if r2.ok:
+            org_map[r2.json()["name"]] = (org_id, entry_id)
+
+    return org_map
+
+
+# ── Organization upsert ───────────────────────────────────────
+def upsert_organization(
+    api_key: str,
+    name: str,
+    custom_fields: list,
+    domain: str | None,
+    existing_org_id: str | None,
+) -> tuple[str, str]:
+    """
+    (org_id, action) 반환. action = 'created' | 'updated'.
+    도메인 422 시 도메인 제외 후 재시도.
+    """
+    h = rh(api_key)
+    payload: dict = {"custom_fields": custom_fields}
+    if domain:
+        payload["domains"] = [domain]
+
+    def _post_with_fallback(pl: dict) -> requests.Response:
+        r = requests.post(f"{RELATE_BASE_URL}/organizations",
+            headers=h, json={**pl, "name": name}, timeout=30)
+        if r.status_code == 422 and domain:
+            pl2 = {k: v for k, v in pl.items() if k != "domains"}
+            r = requests.post(f"{RELATE_BASE_URL}/organizations",
+                headers=h, json={**pl2, "name": name}, timeout=30)
+        return r
+
+    def _patch_with_fallback(org_id: str, pl: dict) -> requests.Response:
+        r = requests.patch(f"{RELATE_BASE_URL}/organizations/{org_id}",
+            headers=h, json=pl, timeout=30)
+        if r.status_code == 422 and domain:
+            pl2 = {k: v for k, v in pl.items() if k != "domains"}
+            r = requests.patch(f"{RELATE_BASE_URL}/organizations/{org_id}",
+                headers=h, json=pl2, timeout=30)
+        return r
+
+    if existing_org_id:
+        resp = _patch_with_fallback(existing_org_id, payload)
+        resp.raise_for_status()
+        return existing_org_id, "updated"
+    else:
+        resp = _post_with_fallback(payload)
+        resp.raise_for_status()
+        return resp.json()["id"], "created"
+
+
+# ── List entry upsert ─────────────────────────────────────────
+def upsert_list_entry(
+    api_key: str,
+    org_id: str,
+    list_fields: list,
+    existing_entry_id: str | None,
+) -> str:
+    """action = 'created' | 'updated' 반환."""
+    h = rh(api_key)
+    if existing_entry_id:
+        r = requests.patch(
+            f"{RELATE_BASE_URL}/lists/{RELATE_LIST_ID}/entries/{existing_entry_id}",
+            headers=h, json={"list_fields": list_fields}, timeout=30)
+        r.raise_for_status()
+        return "updated"
+    else:
+        r = requests.post(
+            f"{RELATE_BASE_URL}/lists/{RELATE_LIST_ID}/entries",
+            headers=h,
+            json={"entryable_id": org_id, "entryable_type": "Organization",
+                  "list_fields": list_fields},
+            timeout=30)
+        r.raise_for_status()
+        return "created"
+
+
+# ── 메인 ──────────────────────────────────────────────────────
 def main() -> None:
     api_key = os.environ.get("RELATE_API_KEY")
     if not api_key:
         raise EnvironmentError("환경변수 RELATE_API_KEY 가 설정되지 않았습니다.")
 
-    client = get_gspread_client()
-    sh = client.open_by_key(SPREADSHEET_ID)
-    ws = sh.worksheet(SHEET_TAB)
+    # 초기화
+    print("=== 초기화 ===")
+    ensure_org_custom_fields(api_key)
+    ensure_list_fields(api_key)
 
+    # 기존 List entry 맵 구성 (org_name → (org_id, entry_id))
+    print("기존 List entries 로딩 중...")
+    existing_map = build_existing_map(api_key)
+    print(f"  기존 등록: {len(existing_map)}건")
+
+    # Sheets 로드
+    client = get_gspread_client()
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_TAB)
     all_values = ws.get_all_values()
     if len(all_values) < 2:
         print("시트에 데이터가 없습니다.")
         return
 
     headers = all_values[0]
+    if "Relate_등록여부" not in headers or "Relate_오류메시지" not in headers:
+        raise ValueError("Relate_등록여부 / Relate_오류메시지 컬럼 없음. 03_to_sheets.py 먼저 실행하세요.")
 
-    # Relate_등록여부 / Relate_오류메시지 컬럼 인덱스 확인 (없으면 오류)
-    if "Relate_등록여부" not in headers:
-        raise ValueError("시트에 'Relate_등록여부' 컬럼이 없습니다. 03_to_sheets.py를 먼저 실행하세요.")
-    if "Relate_오류메시지" not in headers:
-        raise ValueError("시트에 'Relate_오류메시지' 컬럼이 없습니다. 03_to_sheets.py를 먼저 실행하세요.")
+    status_idx = headers.index("Relate_등록여부")
+    error_idx  = headers.index("Relate_오류메시지")
 
-    status_col_idx = headers.index("Relate_등록여부")   # 0-based
-    error_col_idx  = headers.index("Relate_오류메시지")  # 0-based
-
-    # gspread는 1-based row 인덱스 (1행 = 헤더)
-    success_count = 0
-    fail_count = 0
+    # 필터링
+    target_rows: list[tuple[int, dict]] = []
     skip_count = 0
-
-    # 데이터 행 목록 구성
-    data_rows = []
-    for sheet_row_idx, raw_row in enumerate(all_values[1:], start=2):
+    for i, raw_row in enumerate(all_values[1:], start=2):
         padded = raw_row + [""] * (len(headers) - len(raw_row))
-        data_rows.append((sheet_row_idx, dict(zip(headers, padded))))
-
-    # 필터 적용 후 대상 건수 출력
-    target_rows = []
-    for sheet_row_idx, row in data_rows:
+        row = dict(zip(headers, padded))
         if col(row, "영업 적합성").lower() != "true":
             continue
         if col(row, "한국 회사 여부") != "비한국":
@@ -171,83 +235,91 @@ def main() -> None:
         if not email or "wordpress" in email.lower():
             continue
         if col(row, "Relate_등록여부") != "":
+            skip_count += 1
             continue
-        target_rows.append((sheet_row_idx, row))
+        target_rows.append((i, row))
 
-    print(f"필터 통과: {len(target_rows)}건 → Relate 등록 시작")
+    print()
+    print(f"=== 처리 시작: {len(target_rows)}건 (스킵 {skip_count}건) ===")
+    print()
+
+    success_count = fail_count = 0
 
     for sheet_row_idx, row in target_rows:
-        # --- 1. Organization 생성 ---
         name = col(row, "회사명(원문)")
         if not name:
-            error_msg = "회사명이 없어 등록 불가"
-            ws.update_cell(sheet_row_idx, error_col_idx + 1, error_msg)
-            ws.update_cell(sheet_row_idx, status_col_idx + 1, "failed")
+            msg = "회사명(원문) 없음"
+            print(f"  [행 {sheet_row_idx}] FAIL: {msg}")
+            ws.update_cell(sheet_row_idx, error_idx + 1, msg)
+            ws.update_cell(sheet_row_idx, status_idx + 1, "failed")
             fail_count += 1
             continue
 
         domain = parse_domain(col(row, "공식 URL"))
-        email = col(row, "이메일") or None
+        existing_org_id, existing_entry_id = (
+            (existing_map[name][0], existing_map[name][1])
+            if name in existing_map else (None, None)
+        )
 
-        try:
-            org_id = create_organization(api_key, name, domain)
-        except requests.HTTPError as e:
-            error_msg = f"Organization 생성 실패: {e.response.status_code} {e.response.text[:200]}"
-            ws.update_cell(sheet_row_idx, error_col_idx + 1, error_msg)
-            ws.update_cell(sheet_row_idx, status_col_idx + 1, "failed")
-            fail_count += 1
-            continue
-        except Exception as e:
-            error_msg = f"Organization 생성 오류: {e}"
-            ws.update_cell(sheet_row_idx, error_col_idx + 1, error_msg)
-            ws.update_cell(sheet_row_idx, status_col_idx + 1, "failed")
-            fail_count += 1
-            continue
-
-        # --- 1-2. Contact(이메일 + 커스텀 필드) 생성 ---
-        contact_custom_fields = [
-            {"name": "기사(원문)",   "value": col(row, "일어 기사 제목")},
-            {"name": "기사(한국어)", "value": col(row, "한국어 번역")},
-            {"name": "기사(링크)",   "value": col(row, "기사 링크")},
+        org_custom_fields = [
+            {"name": "이메일",         "value": col(row, "이메일")},
+            {"name": "기사(원문)",     "value": col(row, "일어 기사 제목")},
+            {"name": "기사(한국어)",   "value": col(row, "한국어 번역")},
+            {"name": "기사(링크)",     "value": col(row, "기사 링크")},
             {"name": "회사명(한국어)", "value": col(row, "회사명(한국어)")},
         ]
-        if email:
-            try:
-                create_contact(api_key, org_id, email, contact_custom_fields)
-            except requests.HTTPError as e:
-                print(f"  [경고] Contact 생성 실패 (행 {sheet_row_idx}): {e.response.status_code} {e.response.text[:100]}")
-            except Exception as e:
-                print(f"  [경고] Contact 생성 오류 (행 {sheet_row_idx}): {e}")
-
-        # --- 2. List Entry 생성 ---
         list_fields = [
             {"name": "기사(원문)",   "value": col(row, "일어 기사 제목")},
             {"name": "기사(한국어)", "value": col(row, "한국어 번역")},
             {"name": "기사(링크)",   "value": col(row, "기사 링크")},
         ]
 
+        # 1. Organization upsert
         try:
-            create_list_entry(api_key, org_id, list_fields)
+            org_id, org_action = upsert_organization(
+                api_key, name, org_custom_fields, domain, existing_org_id)
+            print(f"  [행 {sheet_row_idx}] Org {org_action}: {name} ({org_id})")
         except requests.HTTPError as e:
-            error_msg = f"List Entry 생성 실패: {e.response.status_code} {e.response.text[:200]}"
-            ws.update_cell(sheet_row_idx, error_col_idx + 1, error_msg)
-            ws.update_cell(sheet_row_idx, status_col_idx + 1, "failed")
+            msg = f"Org 실패: {e.response.status_code} {e.response.text[:150]}"
+            print(f"  [행 {sheet_row_idx}] FAIL — {msg}")
+            ws.update_cell(sheet_row_idx, error_idx + 1, msg)
+            ws.update_cell(sheet_row_idx, status_idx + 1, "failed")
             fail_count += 1
             continue
         except Exception as e:
-            error_msg = f"List Entry 생성 오류: {e}"
-            ws.update_cell(sheet_row_idx, error_col_idx + 1, error_msg)
-            ws.update_cell(sheet_row_idx, status_col_idx + 1, "failed")
+            msg = f"Org 오류: {e}"
+            print(f"  [행 {sheet_row_idx}] FAIL — {msg}")
+            ws.update_cell(sheet_row_idx, error_idx + 1, msg)
+            ws.update_cell(sheet_row_idx, status_idx + 1, "failed")
             fail_count += 1
             continue
 
-        # --- 3. 성공 기록 ---
-        ws.update_cell(sheet_row_idx, status_col_idx + 1, "done")
-        ws.update_cell(sheet_row_idx, error_col_idx + 1, "")
+        # 2. List entry upsert
+        try:
+            entry_action = upsert_list_entry(
+                api_key, org_id, list_fields, existing_entry_id)
+            print(f"  [행 {sheet_row_idx}] List entry {entry_action}")
+        except requests.HTTPError as e:
+            msg = f"List entry 실패: {e.response.status_code} {e.response.text[:150]}"
+            print(f"  [행 {sheet_row_idx}] FAIL — {msg}")
+            ws.update_cell(sheet_row_idx, error_idx + 1, msg)
+            ws.update_cell(sheet_row_idx, status_idx + 1, "failed")
+            fail_count += 1
+            continue
+        except Exception as e:
+            msg = f"List entry 오류: {e}"
+            print(f"  [행 {sheet_row_idx}] FAIL — {msg}")
+            ws.update_cell(sheet_row_idx, error_idx + 1, msg)
+            ws.update_cell(sheet_row_idx, status_idx + 1, "failed")
+            fail_count += 1
+            continue
+
+        ws.update_cell(sheet_row_idx, status_idx + 1, "done")
+        ws.update_cell(sheet_row_idx, error_idx + 1, "")
         success_count += 1
 
-    # --- 5. 완료 출력 ---
-    print(f"완료: 성공 {success_count}건, 실패 {fail_count}건")
+    print()
+    print(f"=== 완료: 성공 {success_count}건 / 실패 {fail_count}건 / 스킵 {skip_count}건 ===")
 
 
 if __name__ == "__main__":
