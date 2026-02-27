@@ -71,8 +71,23 @@ def create_organization(api_key: str, name: str, domain: str | None) -> str:
     return resp.json()["id"]
 
 
-def create_list_entry(api_key: str, org_id: str, list_fields: dict) -> None:
-    """List Entry 생성."""
+def create_contact(api_key: str, org_id: str, email: str) -> None:
+    """Organization에 연결된 Contact(이메일) 생성."""
+    payload = {
+        "organization_id": org_id,
+        "emails": [email],
+    }
+    resp = requests.post(
+        f"{RELATE_BASE_URL}/contacts",
+        headers=relate_headers(api_key),
+        json=payload,
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+
+def create_list_entry(api_key: str, org_id: str, list_fields: list) -> None:
+    """List Entry 생성. list_fields는 [{"name": "...", "value": "..."}, ...] 형식."""
     payload = {
         "entryable_id": org_id,
         "entryable_type": "Organization",
@@ -162,7 +177,7 @@ def main() -> None:
 
     for sheet_row_idx, row in target_rows:
         # --- 1. Organization 생성 ---
-        name = col(row, "회사명(한국어)") or col(row, "회사명(원문)")
+        name = col(row, "회사명(원문)")
         if not name:
             error_msg = "회사명이 없어 등록 불가"
             ws.update_cell(sheet_row_idx, error_col_idx + 1, error_msg)
@@ -171,6 +186,7 @@ def main() -> None:
             continue
 
         domain = parse_domain(col(row, "공식 URL"))
+        email = col(row, "이메일") or None
 
         try:
             org_id = create_organization(api_key, name, domain)
@@ -187,14 +203,19 @@ def main() -> None:
             fail_count += 1
             continue
 
+        # --- 1-2. Contact(이메일) 생성 — Organization API는 emails 미지원 ---
+        if email:
+            try:
+                create_contact(api_key, org_id, email)
+            except Exception:
+                pass  # Contact 실패는 치명적이지 않으므로 계속 진행
+
         # --- 2. List Entry 생성 ---
-        list_fields = {
-            "기사제목":  col(row, "일어 기사 제목"),
-            "한국어번역": col(row, "한국어 번역"),
-            "기사링크":  col(row, "기사 링크"),
-            "수집일":    col(row, "게재 일시"),
-            "영업근거":  col(row, "판단 근거"),
-        }
+        list_fields = [
+            {"name": "기사(원문)",   "value": col(row, "일어 기사 제목")},
+            {"name": "기사(한국어)", "value": col(row, "한국어 번역")},
+            {"name": "기사(링크)",   "value": col(row, "기사 링크")},
+        ]
 
         try:
             create_list_entry(api_key, org_id, list_fields)
