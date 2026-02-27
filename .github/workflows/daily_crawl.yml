@@ -1,8 +1,8 @@
 name: Daily PR TIMES Crawling
 on:
   schedule:
-    # 한국 시간 오전 10:30 (UTC 01:30), 2026-12-31까지 실행
-    - cron: '30 1 * * *'
+    # 한국 시간 오전 09:00 (UTC 00:00), 2026-12-31까지 실행
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:

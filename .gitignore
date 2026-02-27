@@ -3,3 +3,5 @@ prtimes_beauty_today.csv
 raw_*.csv
 final_*.csv
 
+__pycache__/
+
