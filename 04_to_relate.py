@@ -222,7 +222,11 @@ def build_existing_contact_map_by_email(api_key: str) -> dict[str, str]:
         if not cid or not isinstance(emails, list):
             continue
         for e in emails:
-            em = str(e or "").strip().lower()
+            # emails 항목이 문자열이거나 {"email": "..."} 객체일 수 있음
+            if isinstance(e, dict):
+                em = str(e.get("email") or "").strip().lower()
+            else:
+                em = str(e or "").strip().lower()
             if em and em not in out:
                 out[em] = cid
     return out
@@ -320,8 +324,33 @@ def upsert_contact(
             json=payload,
             timeout=30,
         )
+        if r.ok:
+            return str(r.json().get("id") or "").strip(), "created"
+
+        # 422 + "has already been taken" → org 소속 컨택에서 이메일 매칭 후 PATCH
+        if r.status_code == 422 and "has already been taken" in r.text:
+            r2 = requests.get(
+                f"{RELATE_BASE_URL}/organizations/{org_id}/contacts",
+                headers=h,
+                timeout=15,
+            )
+            if r2.ok:
+                for c in r2.json().get("data", []):
+                    cid = str(c.get("id") or "").strip()
+                    for e in c.get("emails", []):
+                        em = e if isinstance(e, str) else e.get("email", "")
+                        if str(em or "").strip().lower() == email.lower() and cid:
+                            r3 = requests.patch(
+                                f"{RELATE_BASE_URL}/contacts/{cid}",
+                                headers=h,
+                                json={"emails": [email], "custom_fields": custom_fields},
+                                timeout=30,
+                            )
+                            r3.raise_for_status()
+                            return cid, "updated"
+
         r.raise_for_status()
-        return str(r.json().get("id") or "").strip(), "created"
+        return "", "created"  # unreachable
 
 
 # ── List entry upsert ─────────────────────────────────────────
